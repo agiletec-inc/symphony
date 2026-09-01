@@ -8,6 +8,8 @@ lane別`WORKFLOW.md`はrepository外へ生成するruntime artifactでありGit�
 credential、workspace、log、生成workflow、process stateは保存しない。`runtime.status`が`approved`でない
 instanceは起動できない。
 
+権限を伴うbuild、起動、停止、incident対応は[`RUNBOOK.md`](RUNBOOK.md)に従う。
+
 ```sh
 node scripts/verify-instance.mjs instances/agiletec-pilot/instance.json
 node scripts/verify-linear-github-issues-sync.mjs

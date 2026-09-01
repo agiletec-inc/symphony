@@ -7,6 +7,18 @@ on:
       - main
 
 jobs:
+  instance-boundaries:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify instance ownership boundaries
+        run: |
+          node --test tests/*.test.mjs
+          node scripts/verify-instance.mjs instances/agiletec-pilot/instance.json
+
   make-all:
     runs-on: ubuntu-latest
     defaults:

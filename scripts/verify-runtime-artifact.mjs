@@ -8,7 +8,7 @@ export async function verifyRuntimeArtifact({ manifestPath, binary }) {
   let build
   try { build = JSON.parse(await readFile(resolve(dirname(binary), 'build-manifest.json'), 'utf8')) }
   catch (error) { throw new Error(`[symphony-artifact] cannot read build manifest: ${error.message}`) }
-  const expected = { repository: instance.runtime.upstreamRepository, commit: instance.runtime.commit, buildImage: instance.runtime.buildImage }
+  const expected = { repository: instance.runtime.repository, commit: instance.runtime.commit, buildImage: instance.runtime.buildImage }
   for (const [field, value] of Object.entries(expected)) if (build[field] !== value) throw new Error(`[symphony-artifact] ${field} mismatch: expected ${value}`)
   return build
 }

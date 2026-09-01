@@ -22,7 +22,7 @@ command -v docker >/dev/null 2>&1 || {
   exit 69
 }
 
-upstream_url=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).runtime.upstreamRepository' "$script_dir/instance.json")
+source_url=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).runtime.repository' "$script_dir/instance.json")
 upstream_commit=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).runtime.commit' "$script_dir/instance.json")
 build_image=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).runtime.buildImage' "$script_dir/instance.json")
 
@@ -34,7 +34,7 @@ trap cleanup EXIT HUP INT TERM
 
 source_dir="$build_root/source"
 git init --quiet "$source_dir"
-git -C "$source_dir" remote add origin "$upstream_url"
+git -C "$source_dir" remote add origin "$source_url"
 git -C "$source_dir" fetch --quiet --depth 1 origin "$upstream_commit"
 git -C "$source_dir" checkout --quiet --detach FETCH_HEAD
 
@@ -64,6 +64,6 @@ node -e '
     buildImage: process.argv[4],
   }
   fs.writeFileSync(path.join(process.argv[1], "build-manifest.json"), `${JSON.stringify(output, null, 2)}\n`)
-' "$output_dir" "$upstream_url" "$upstream_commit" "$build_image"
+' "$output_dir" "$source_url" "$upstream_commit" "$build_image"
 
 echo "built official Symphony at $output_dir/symphony"

@@ -9,6 +9,7 @@ const load = async () => JSON.parse(await readFile(manifestPath, 'utf8'))
 test('instance has one cross-repository authority', async () => {
   const instance = verifyInstance(await load())
   assert.equal(instance.runtime.repository, 'https://github.com/agiletec-inc/symphony.git')
+  assert.equal(instance.runtime.upstreamRepository, 'https://github.com/openai/symphony.git')
   assert.equal(instance.repositories.length, 1)
 })
 test('runtime fails closed', async () => { const instance = await load(); assert.throws(() => verifyInstance(instance, { runtime: true }), /blocked_dependency_advisories/) })

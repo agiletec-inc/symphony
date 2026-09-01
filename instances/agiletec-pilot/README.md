@@ -10,6 +10,7 @@ instanceは起動できない。
 
 ```sh
 node scripts/verify-instance.mjs instances/agiletec-pilot/instance.json
+node scripts/verify-linear-github-issues-sync.mjs
 node --test tests/*.test.mjs
 sh scripts/run-instance-lane.sh \
   instances/agiletec-pilot/instance.json agiletec /absolute/repository/checkout \

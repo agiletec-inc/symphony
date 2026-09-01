@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "organization": "agiletec-inc",
+  "linear": {
+    "workspace": "agiletec-inc",
+    "teamId": "a9356a9a-af37-4ea7-b379-a9b451214b08",
+    "teamKey": "AIS",
+    "teamName": "AIris Symphony",
+    "projectId": "5f5b89ae-b39b-4af7-8429-6e65a07c2ec5"
+  },
+  "sync": {
+    "direction": "github_to_linear",
+    "futureIssues": "pending_linear_github_integration",
+    "historicalIssues": "pending_linear_importer"
+  },
+  "repositories": [
+    ".agents",
+    ".github",
+    "agile-server",
+    "agiletec",
+    "airis-coach",
+    "airis-keeper",
+    "airis-mcp-gateway",
+    "airis-studio",
+    "approved-browser-mcp",
+    "claude-code-terminal-ux",
+    "claude-desktop-skills",
+    "cmd-ime",
+    "coinpool",
+    "duplicate-finder",
+    "github-actions",
+    "github-infrastructure",
+    "homebrew-tap",
+    "mail-cleanse",
+    "mindbase",
+    "remote-plocate",
+    "tasks",
+    "voom",
+    "ysk"
+  ]
+}

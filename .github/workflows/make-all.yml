@@ -18,6 +18,7 @@ jobs:
         run: |
           node --test tests/*.test.mjs
           node scripts/verify-instance.mjs instances/agiletec-pilot/instance.json
+          node scripts/verify-linear-github-issues-sync.mjs
 
   make-all:
     runs-on: ubuntu-latest

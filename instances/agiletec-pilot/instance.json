@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "instanceId": "agiletec-pilot",
+  "tracker": {
+    "kind": "linear",
+    "projectSlug": "airis-symphony-pilot-4d8e46efb13b",
+    "commonRequiredLabel": "symphony-pilot"
+  },
+  "runtime": {
+    "repository": "https://github.com/agiletec-inc/symphony.git",
+    "upstreamRepository": "https://github.com/openai/symphony.git",
+    "commit": "8001b52e3062495a16e520e4ceaf8f9de868c4d0",
+    "buildImage": "elixir:1.19.5-otp-28@sha256:2dae9c7f65da4772dc435f9e4e66396950db70223798d304d4764a1867151882",
+    "status": "blocked_dependency_advisories"
+  },
+  "capacity": {
+    "maxConcurrentAgents": 1
+  },
+  "repositories": [
+    {
+      "name": "agiletec",
+      "repository": "agiletec-inc/agiletec",
+      "cloneUrl": "https://github.com/agiletec-inc/agiletec.git",
+      "requiredLabel": "repo:agiletec",
+      "workflowPath": ".symphony/WORKFLOW.md",
+      "enabled": true
+    }
+  ]
+}

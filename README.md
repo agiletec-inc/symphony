@@ -12,6 +12,12 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 
 ## Running Symphony
 
+AgileTechが運用するinstanceのcross-repository authorityは
+[`instances/agiletec-pilot/instance.json`](instances/agiletec-pilot/instance.json)に置く。
+対象repositoryはagent prompt policyだけを所有し、tracker scope、runtime pin、capacity、lane inventoryを
+複製しない。詳細と検証commandは
+[`instances/agiletec-pilot/README.md`](instances/agiletec-pilot/README.md)を参照する。
+
 ### Requirements
 
 Symphony works best in codebases that have adopted

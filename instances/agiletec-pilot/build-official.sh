@@ -10,6 +10,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 output_dir=$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$1")
 
+node "$repo_root/scripts/verify-instance.mjs" "$script_dir/instance.json" --runtime
+
 case "$output_dir/" in
   "$repo_root/"*)
     echo "output directory must be outside the repository" >&2
@@ -57,11 +59,14 @@ cp "$source_dir/elixir/bin/symphony" "$output_dir/symphony"
 chmod 0755 "$output_dir/symphony"
 node -e '
   const fs = require("node:fs")
+  const crypto = require("node:crypto")
   const path = require("node:path")
+  const binary = fs.readFileSync(path.join(process.argv[1], "symphony"))
   const output = {
     repository: process.argv[2],
     commit: process.argv[3],
     buildImage: process.argv[4],
+    artifactSha256: crypto.createHash("sha256").update(binary).digest("hex"),
   }
   fs.writeFileSync(path.join(process.argv[1], "build-manifest.json"), `${JSON.stringify(output, null, 2)}\n`)
 ' "$output_dir" "$source_url" "$upstream_commit" "$build_image"

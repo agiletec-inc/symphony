@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readAndVerifyInstance } from './verify-instance.mjs'
@@ -10,6 +11,10 @@ export async function verifyRuntimeArtifact({ manifestPath, binary }) {
   catch (error) { throw new Error(`[symphony-artifact] cannot read build manifest: ${error.message}`) }
   const expected = { repository: instance.runtime.repository, commit: instance.runtime.commit, buildImage: instance.runtime.buildImage }
   for (const [field, value] of Object.entries(expected)) if (build[field] !== value) throw new Error(`[symphony-artifact] ${field} mismatch: expected ${value}`)
+  const artifactSha256 = createHash('sha256').update(await readFile(binary)).digest('hex')
+  if (build.artifactSha256 !== artifactSha256) {
+    throw new Error('[symphony-artifact] binary digest mismatch')
+  }
   return build
 }
 

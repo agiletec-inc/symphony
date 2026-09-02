@@ -5,6 +5,11 @@
 対象repositoryは自身の`workflowPath`にあるprompt policyを所有し、instance設定を複製しない。
 lane別`WORKFLOW.md`はrepository外へ生成するruntime artifactでありGitへcommitしない。
 
+Codexのsandbox、approval、network設定はportableなagent行動規範ではなく、workspace・credential・外部通信を
+制限するinstance runtime permission boundaryである。このためhost個体のglobal設定から注入せず、生成workflowで
+再現可能かつfail-closedに固定する。portableな判断・skillはglobal `~/.agents`、製品固有promptは対象repositoryが
+それぞれ所有する。
+
 credential、workspace、log、生成workflow、process stateは保存しない。`runtime.status`が`approved`でない
 instanceは起動できない。
 

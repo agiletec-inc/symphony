@@ -28,5 +28,6 @@ test('artifact build and synthetic test consume the instance manifest', async ()
     const source = await readFile(new URL(`../instances/agiletec-pilot/${name}`, import.meta.url), 'utf8')
     assert.match(source, /instance\.json/)
     assert.doesNotMatch(source, /upstream\.json/)
+    assert.match(source, /verify-instance\.mjs.*--runtime/s)
   }
 })

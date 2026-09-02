@@ -7,9 +7,13 @@ if [ "$#" -ne 1 ]; then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 build_dir=$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$1")
 artifact="$build_dir/symphony"
 manifest="$build_dir/build-manifest.json"
+
+node "$repo_root/scripts/verify-instance.mjs" "$script_dir/instance.json" --runtime
+node "$repo_root/scripts/verify-runtime-artifact.mjs" "$script_dir/instance.json" "$artifact"
 
 test -x "$artifact" || {
   echo "missing executable: $artifact" >&2

@@ -31,7 +31,39 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   after_create: |
+    set -eu
     git clone --filter=blob:none ${yamlString(lane.cloneUrl)} .
+    git fetch --atomic --prune origin
+    git remote set-head origin --auto
+    default_ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)
+    case "$default_ref" in
+      origin/*) ;;
+      *) echo "origin/HEAD is not a remote-tracking ref" >&2; exit 78 ;;
+    esac
+    git switch --detach "refs/remotes/$default_ref"
+    test -z "$(git status --porcelain --untracked-files=all)"
+  before_run: |
+    set -eu
+    git fetch --atomic --prune origin
+    git remote set-head origin --auto
+    default_ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD)
+    case "$default_ref" in
+      origin/*) ;;
+      *) echo "origin/HEAD is not a remote-tracking ref" >&2; exit 78 ;;
+    esac
+    default_branch=\${default_ref#origin/}
+    current_branch=$(git symbolic-ref --quiet --short HEAD || true)
+    if [ "$current_branch" = "$default_branch" ] || [ "$current_branch" = "master" ]; then
+      echo "refusing to run on the default branch: $current_branch" >&2
+      exit 78
+    fi
+    if [ -z "$current_branch" ]; then
+      branch="symphony-$(basename "$PWD")"
+      git switch --create "$branch" "refs/remotes/$default_ref"
+    fi
+    current_branch=$(git symbolic-ref --quiet --short HEAD)
+    test "$current_branch" != "$default_branch"
+    test "$current_branch" != "master"
 agent:
   max_concurrent_agents: ${instance.capacity.maxConcurrentAgents}
   max_turns: 20

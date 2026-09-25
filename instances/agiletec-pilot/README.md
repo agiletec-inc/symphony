@@ -19,7 +19,14 @@ instanceは起動できない。
 node scripts/verify-instance.mjs instances/agiletec-pilot/instance.json
 node scripts/verify-linear-github-issues-sync.mjs
 node --test tests/*.test.mjs
+node --test tests/github-linear-issue-sync.test.mjs
 sh scripts/run-instance-lane.sh \
   instances/agiletec-pilot/instance.json agiletec /absolute/repository/checkout \
   /absolute/symphony /absolute/config/root /absolute/log/root
 ```
+
+The host-side consumer is [`scripts/github-linear-issue-sync.mjs`](../../scripts/github-linear-issue-sync.mjs).
+It accepts only signed GitHub App `issues` events at `/webhooks/github/issues`, creates or updates the
+configured Linear team issue in `Todo`/`Done`, and uses the GitHub Issue URL as an idempotent Linear
+attachment. `LINEAR_API_KEY` and `GITHUB_WEBHOOK_SECRET` are host-only environment variables; they are
+never placed in workflow, Issue, log, or GitHub Actions configuration.

@@ -24,6 +24,12 @@ export function verifyManifest(manifest, instance) {
   if (manifest?.sync?.direction !== 'github_to_linear') {
     fail('sync direction must remain GitHub to Linear')
   }
+  if (manifest?.sync?.transport !== 'github_app_webhook_to_host_consumer') {
+    fail('sync transport must remain the host-side GitHub App webhook consumer')
+  }
+  if (manifest?.sync?.activation !== 'pending_host_https_endpoint_and_linear_admin_webhook') {
+    fail('sync activation must remain pending until live provider read-back proves activation')
+  }
   for (const field of ['futureIssues', 'historicalIssues']) {
     if (!String(manifest?.sync?.[field] ?? '').startsWith('pending_')) {
       fail(`${field} must remain pending until live Linear read-back proves activation`)

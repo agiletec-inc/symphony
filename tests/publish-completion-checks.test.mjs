@@ -51,6 +51,8 @@ test('looks up and updates the latest check run instead of creating duplicates',
     buildCheckRunLookupCommand({ repo: 'owner/repo', name: COMPLETION_CHECK_NAMES.runtime, mergeSha }).slice(0, 4),
     ['gh', 'api', '--method', 'GET']
   )
+  assert.ok(buildCheckRunLookupCommand({ repo: 'owner/repo', name: COMPLETION_CHECK_NAMES.runtime, mergeSha }).includes('--paginate'))
+  assert.ok(buildCheckRunLookupCommand({ repo: 'owner/repo', name: COMPLETION_CHECK_NAMES.runtime, mergeSha }).includes('--slurp'))
   assert.deepEqual(
     buildCheckRunUpdateCommand({ repo: 'owner/repo', checkRunId: 42, conclusion: 'failure' }).slice(-4),
     ['-f', 'status=completed', '-f', 'conclusion=failure']

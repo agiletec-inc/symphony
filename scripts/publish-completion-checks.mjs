@@ -86,13 +86,15 @@ export function buildCheckRunLookupCommand({ repo, name, mergeSha }) {
     'api',
     '--method',
     'GET',
+    '--paginate',
+    '--slurp',
     `repos/${repo}/commits/${mergeSha}/check-runs`,
     '-f',
     `check_name=${name}`,
     '-f',
     'per_page=100',
     '--jq',
-    '.check_runs | sort_by(.id) | last | .id // empty',
+    '[.[].check_runs[]] | sort_by(.id) | last.id // empty',
   ]
 }
 

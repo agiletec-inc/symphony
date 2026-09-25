@@ -15,8 +15,9 @@ temporary worktree at the exact merge commit, runs both argv arrays there, and p
 The commands are never run in the primary checkout. Both Checks are published even when one
 verification fails; any failed verification or publication causes the command to fail.
 
-The command removes token environment variables before invoking `gh`, and updates the latest
-existing Check Run for the same name and SHA instead of creating duplicates. The completion
+The command removes token and provider credential environment variables before invoking the
+verification commands. It uses an explicit `GET` lookup, then updates the latest existing Check
+Run for the same name and SHA instead of creating duplicates. The completion
 verifier in the consumer repository must require both Checks to be successful and
 to have the same merge commit SHA before updating the Linear Issue to `Done`. Missing host
 credentials, missing commands, an invalid SHA, a missing commit, or an unavailable worktree

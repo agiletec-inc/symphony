@@ -11,6 +11,7 @@ import {
   COMPLETION_CHECK_NAMES,
   hostGhEnvironment,
   publishCompletionChecks,
+  verificationEnvironment,
 } from '../scripts/publish-completion-checks.mjs'
 
 const mergeSha = 'a'.repeat(40)
@@ -47,6 +48,10 @@ test('looks up and updates the latest check run instead of creating duplicates',
     /check_name=symphony-runtime/
   )
   assert.deepEqual(
+    buildCheckRunLookupCommand({ repo: 'owner/repo', name: COMPLETION_CHECK_NAMES.runtime, mergeSha }).slice(0, 4),
+    ['gh', 'api', '--method', 'GET']
+  )
+  assert.deepEqual(
     buildCheckRunUpdateCommand({ repo: 'owner/repo', checkRunId: 42, conclusion: 'failure' }).slice(-4),
     ['-f', 'status=completed', '-f', 'conclusion=failure']
   )
@@ -55,6 +60,20 @@ test('looks up and updates the latest check run instead of creating duplicates',
 test('removes token environment variables before invoking gh', () => {
   const env = hostGhEnvironment({ GH_TOKEN: 'redacted', GITHUB_TOKEN: 'redacted', PATH: '/bin' })
   assert.deepEqual(env, { PATH: '/bin' })
+})
+
+test('passes only non-secret verification environment variables to check commands', () => {
+  assert.deepEqual(
+    verificationEnvironment({
+      PATH: '/bin',
+      HOME: '/Users/operator',
+      GH_TOKEN: 'redacted',
+      AWS_ACCESS_KEY_ID: 'redacted',
+      DOPPLER_TOKEN: 'redacted',
+      CI: 'true',
+    }),
+    { PATH: '/bin', CI: 'true' }
+  )
 })
 
 test('runs both checks at the merge SHA and publishes a failure without masking it', async () => {

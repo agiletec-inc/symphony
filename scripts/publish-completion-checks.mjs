@@ -19,6 +19,21 @@ const GH_TOKEN_ENV_NAMES = [
   'GH_ENTERPRISE_TOKEN',
   'GITHUB_ENTERPRISE_TOKEN',
 ]
+const VERIFICATION_ENV_NAMES = [
+  'PATH',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'CI',
+  'NODE_ENV',
+  'TZ',
+  'TERM',
+  'TERM_PROGRAM',
+  'FORCE_COLOR',
+  'NO_COLOR',
+]
 
 function fail(message) {
   throw new Error(`[symphony-completion] ${message}`)
@@ -69,6 +84,8 @@ export function buildCheckRunLookupCommand({ repo, name, mergeSha }) {
   return [
     'gh',
     'api',
+    '--method',
+    'GET',
     `repos/${repo}/commits/${mergeSha}/check-runs`,
     '-f',
     `check_name=${name}`,
@@ -98,6 +115,14 @@ export function hostGhEnvironment(env = process.env) {
   const result = { ...env }
   for (const name of GH_TOKEN_ENV_NAMES) delete result[name]
   return result
+}
+
+export function verificationEnvironment(env = process.env) {
+  return Object.fromEntries(
+    VERIFICATION_ENV_NAMES
+      .filter((name) => typeof env[name] === 'string')
+      .map((name) => [name, env[name]])
+  )
 }
 
 const runDefault = (command, options = {}) =>
@@ -147,6 +172,7 @@ export async function publishCompletionChecks({
   let worktreeAdded = false
   const failures = []
   const results = {}
+  let worktreeRemoved = false
   try {
     await run(['git', 'worktree', 'add', '--detach', worktree, mergeSha], { cwd: checkout })
     worktreeAdded = true
@@ -157,7 +183,7 @@ export async function publishCompletionChecks({
       const name = COMPLETION_CHECK_NAMES[kind]
       let conclusion = 'success'
       try {
-        await run(command, { cwd: worktree })
+        await run(command, { cwd: worktree, env: verificationEnvironment() })
       } catch {
         conclusion = 'failure'
         failures.push(`${name} verification failed`)
@@ -173,14 +199,17 @@ export async function publishCompletionChecks({
     if (worktreeAdded) {
       try {
         await run(['git', 'worktree', 'remove', '--force', worktree], { cwd: checkout })
+        worktreeRemoved = true
       } catch {
         failures.push('completion worktree cleanup failed')
       }
     }
-    try {
-      await rm(worktree, { recursive: true, force: true })
-    } catch {
-      failures.push('completion temporary directory cleanup failed')
+    if (!worktreeAdded || worktreeRemoved) {
+      try {
+        await rm(worktree, { recursive: true, force: true })
+      } catch {
+        failures.push('completion temporary directory cleanup failed')
+      }
     }
   }
   if (failures.length > 0) fail(failures.join('; '))

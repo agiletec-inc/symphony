@@ -38,4 +38,7 @@ help with the setup:
 
 ## License
 
+Post-merge acceptance/runtime verification is documented in
+[`docs/post-merge-completion-checks.md`](docs/post-merge-completion-checks.md).
+
 This project is licensed under the [Apache License 2.0](LICENSE).

@@ -10,6 +10,8 @@
   },
   "sync": {
     "direction": "github_to_linear",
+    "transport": "github_app_webhook_to_host_consumer",
+    "activation": "pending_host_https_endpoint_and_linear_admin_webhook",
     "futureIssues": "pending_linear_github_integration",
     "historicalIssues": "pending_linear_importer"
   },

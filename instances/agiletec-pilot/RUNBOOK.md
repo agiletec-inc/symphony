@@ -33,6 +33,23 @@ live repository inventoryを確認するときだけ、認証済みoperator環�
 node scripts/verify-linear-github-issues-sync.mjs --live
 ```
 
+## GitHub Issue -> Linear activation
+
+The sync implementation runs on the Symphony host, not in GitHub Actions. Start it only after the
+owner has provisioned a publicly reachable HTTPS reverse proxy and registered a GitHub App webhook
+for the `issues` event. The host service requires `LINEAR_API_KEY`, `LINEAR_TEAM_ID`,
+`GITHUB_WEBHOOK_SECRET`, and optionally `LINEAR_PROJECT_ID`; values must be injected by the host
+secret manager and must not be copied into this repository.
+
+```sh
+node scripts/github-linear-issue-sync.mjs
+```
+
+Before activation, `sync.activation` must remain pending. After activation, verify a disposable Issue
+with a signed webhook delivery, read back the matching Linear Issue and GitHub URL attachment, and
+only then change the activation state in the same manifest change. A failed delivery must remain a
+failed webhook so GitHub can retry; do not acknowledge an unprocessed event.
+
 ## Build and synthetic verification
 
 repository外の新しいartifact directoryを指定する。

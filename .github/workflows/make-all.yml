@@ -34,5 +34,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
+      - name: Audit locked dependencies
+        run: |
+          mix local.hex 2.6.0 --force
+          mix deps.get
+          mix hex.audit
+
       - name: Verify make all
         run: make all

@@ -56,6 +56,10 @@ sh scripts/run-instance-lane.sh \
   /absolute/artifact/symphony /absolute/config/root /absolute/log/root
 ```
 
+同一instance設定とrepository policyで再起動する場合、生成済みWorkflowが同一bytesの通常fileなら再利用する。
+異なる内容、symlink、通常file以外の出力は上書きせず起動を拒否する。instance設定やpolicyを変更して
+再起動する場合は、新しいconfig rootをservice manager側で指定する。
+
 dashboard用portは指定しない。pilotは最大同時実行1で、`symphony-pilot`とrepository labelを持つ
 Issueだけを処理する。
 

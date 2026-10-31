@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readAndVerifyInstance } from './verify-instance.mjs'
@@ -46,7 +47,23 @@ codex:
 
 ${policy.trim()}\n`
   await mkdir(dirname(output), { recursive: true })
-  await writeFile(output, workflow, { encoding: 'utf8', flag: 'wx' }).catch((error) => fail(`cannot create generated workflow ${output}: ${error.message}`))
+  try {
+    await writeFile(output, workflow, { encoding: 'utf8', flag: 'wx' })
+  } catch (error) {
+    if (error.code !== 'EEXIST') fail(`cannot create generated workflow ${output}: ${error.message}`)
+    let existing
+    try {
+      existing = await open(output, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      const metadata = await existing.stat()
+      if (!metadata.isFile()) throw new Error('existing output is not a regular file')
+      if (metadata.size !== Buffer.byteLength(workflow)) throw new Error('existing output differs; use a new config directory')
+      if (!(await existing.readFile()).equals(Buffer.from(workflow))) throw new Error('existing output differs; use a new config directory')
+    } catch (reuseError) {
+      fail(`cannot create generated workflow ${output}: ${reuseError.message}`)
+    } finally {
+      await existing?.close()
+    }
+  }
   return workflow
 }
 

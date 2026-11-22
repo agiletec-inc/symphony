@@ -1628,4 +1628,130 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "explicit Luna model is sent on model/list, thread/start, and turn/start" do
+    {root, workspace, trace, issue} = wire_fixture(["gpt-5.6-luna"], nil, "gpt-5.6-luna")
+    on_exit(fn -> File.rm_rf(root) end)
+    {:ok, session} = AppServer.start_session(workspace, model: "gpt-5.6-luna")
+    assert {:ok, _} = AppServer.run_turn(session, "work", issue)
+    AppServer.stop_session(session)
+    content = File.read!(trace)
+    assert Regex.scan(~r/"method":"(initialize|model\/list|thread\/start|turn\/start)"/, content) |> Enum.map(&List.last/1) == ["initialize", "model/list", "thread/start", "turn/start"]
+    assert content =~ ~s("model":"gpt-5.6-luna")
+  end
+
+  test "missing Luna model fails before thread/start or turn/start" do
+    {root, workspace, trace, _issue} = wire_fixture([], nil)
+    on_exit(fn -> File.rm_rf(root) end)
+    assert {:error, {:model_unavailable, "gpt-5.6-luna"}} = AppServer.start_session(workspace, model: "gpt-5.6-luna")
+    methods = Regex.scan(~r/"method":"(initialize|model\/list|thread\/start|turn\/start)"/, File.read!(trace)) |> Enum.map(&List.last/1)
+    assert methods == ["initialize", "model/list"]
+  end
+
+  test "saved thread resumes with exact thread id and workspace" do
+    {root, workspace, trace, issue} = wire_fixture(["gpt-5.6-luna"], "saved-thread", "gpt-5.6-luna")
+    on_exit(fn -> File.rm_rf(root) end)
+    {:ok, session} = AppServer.start_session(workspace, model: "gpt-5.6-luna", thread_id: "saved-thread")
+    assert {:ok, result} = AppServer.run_turn(session, "resume", issue)
+    AppServer.stop_session(session)
+    content = File.read!(trace)
+    assert content =~ ~s("method":"thread/resume")
+    assert content =~ ~s("threadId":"saved-thread")
+    assert content =~ ~s("cwd":) and content =~ "MT-WIRE"
+    refute content =~ ~s("method":"thread/start")
+    assert result.thread_id == "saved-thread"
+  end
+
+  test "explicit model response mismatch and omission stop before turn" do
+    {root, workspace, trace, _issue} = wire_fixture(["gpt-5.6-luna"], nil, "other-model")
+    on_exit(fn -> File.rm_rf(root) end)
+    assert {:error, {:model_mismatch, "gpt-5.6-luna", "other-model"}} = AppServer.start_session(workspace, model: "gpt-5.6-luna")
+    refute File.read!(trace) =~ "turn/start"
+    {root2, workspace2, trace2, _} = wire_fixture(["gpt-5.6-luna"], nil, nil)
+    on_exit(fn -> File.rm_rf(root2) end)
+    assert {:error, {:model_mismatch, "gpt-5.6-luna", nil}} = AppServer.start_session(workspace2, model: "gpt-5.6-luna")
+    refute File.read!(trace2) =~ "turn/start"
+  end
+
+  test "resume response thread mismatch is rejected" do
+    {root, workspace, trace, _issue} = wire_fixture(["gpt-5.6-luna"], "saved-thread", "gpt-5.6-luna", "other-thread")
+    on_exit(fn -> File.rm_rf(root) end)
+    assert {:error, {:thread_id_mismatch, "saved-thread", "other-thread"}} = AppServer.start_session(workspace, model: "gpt-5.6-luna", thread_id: "saved-thread")
+    refute File.read!(trace) =~ "turn/start"
+  end
+
+  test "resume rejects absent or different response model and closes its port" do
+    for returned_model <- [nil, "other-model"] do
+      {root, workspace, trace, _issue} = wire_fixture(["gpt-5.6-luna"], "saved-thread", returned_model)
+      on_exit(fn -> File.rm_rf(root) end)
+      ports_before = owned_ports()
+
+      assert {:error, {:model_mismatch, "gpt-5.6-luna", ^returned_model}} =
+               AppServer.start_session(workspace, model: "gpt-5.6-luna", thread_id: "saved-thread")
+
+      assert MapSet.subset?(owned_ports(), ports_before)
+      refute File.read!(trace) =~ "turn/start"
+    end
+  end
+
+  test "start and resume reject empty response thread identifiers and close their ports" do
+    for resume_id <- [nil, "saved-thread"] do
+      {root, workspace, trace, _issue} = wire_fixture(["gpt-5.6-luna"], resume_id, "gpt-5.6-luna", "")
+      on_exit(fn -> File.rm_rf(root) end)
+      ports_before = owned_ports()
+      opts = [model: "gpt-5.6-luna", thread_id: resume_id]
+      assert {:error, {:invalid_thread_payload, %{"id" => ""}}} = AppServer.start_session(workspace, opts)
+      assert MapSet.subset?(owned_ports(), ports_before)
+      refute File.read!(trace) =~ "turn/start"
+    end
+  end
+
+  test "unconfigured model records response metadata without inventing a fallback" do
+    for response_model <- [nil, "server-selected-model"] do
+      {root, workspace, _trace, _issue} = wire_fixture([], nil, response_model)
+      on_exit(fn -> File.rm_rf(root) end)
+      {:ok, session} = AppServer.start_session(workspace)
+      assert session.model == response_model
+      AppServer.stop_session(session)
+    end
+  end
+
+  defp owned_ports do
+    owner = self()
+
+    Port.list()
+    |> Enum.filter(fn port -> Port.info(port, :connected) == {:connected, owner} end)
+    |> MapSet.new()
+  end
+
+  defp wire_fixture(models, resume_id, returned_model \\ :default, returned_thread \\ nil) do
+    root = Path.join(System.tmp_dir!(), "symphony-wire-#{System.unique_integer([:positive])}")
+    workspace = Path.join(root, "workspaces/MT-WIRE")
+    trace = Path.join(root, "requests.jsonl")
+    fake = Path.join(root, "fake-codex")
+    File.mkdir_p!(workspace)
+    encoded = Jason.encode!(Enum.map(models, &%{"id" => &1}))
+    thread = resume_id || "new-thread"
+    response_thread = returned_thread || thread
+    model_json = if returned_model == :default, do: List.first(models) && ~s(,"model":"#{List.first(models)}"), else: (returned_model && ~s(,"model":"#{returned_model}")) || ""
+
+    File.write!(fake, """
+    #!/bin/sh
+    trace=#{trace}
+    while IFS= read -r line; do
+      printf '%s\\n' "$line" >> "$trace"
+      case "$line" in
+        *'\"method\":\"initialize\"'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+        *'\"method\":\"model/list\"'*) printf '%s\\n' '{"id":4,"result":{"data":#{encoded}}}' ;;
+        *'\"method\":\"thread/resume\"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"#{response_thread}"}#{model_json}}}' ;;
+        *'\"method\":\"thread/start\"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"#{response_thread}"}#{model_json}}}' ;;
+        *'\"method\":\"turn/start\"'*) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-wire"}}}'; printf '%s\\n' '{"method":"turn/completed"}' ;;
+      esac
+    done
+    """)
+
+    File.chmod!(fake, 0o755)
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(root, "workspaces"), codex_command: "#{fake} app-server")
+    {root, workspace, trace, %Issue{id: "wire", identifier: "W", title: "wire", state: "In Progress", url: "https://example.org/wire"}}
+  end
 end

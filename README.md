@@ -10,6 +10,16 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
+## Linear session control
+
+The Elixir implementation includes an opt-in extension for native Linear Agent
+Sessions and selected Codex Terminal handoffs. It is intended to keep operational
+progress, follow-up instructions, and human decisions in Linear while ordinary
+application code handles monitoring. Normal execution uses an explicitly checked
+Luna model. See the [control acceptance contract](elixir/docs/linear-control.md)
+for the required end-to-end behavior; local protocol tests do not establish that
+an instance has been deployed or accepted for unattended use.
+
 ## Running Symphony
 
 ### Requirements
@@ -39,3 +49,19 @@ help with the setup:
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+Native Linear sessions use structured implementation outcomes to select CI/user
+waiting or a fresh read-only Luna review. Review repair is bounded to three rounds
+(or a lower `agent.max_turns`); reviewer approval completes the run without merging
+or deploying. Worker exit preserves the selected state, while newer input and
+persisted pause take precedence. This path still requires live acceptance.
+
+Native CI waits are monitored by Control every 30 seconds without a model. The
+GitHub CLI adapter binds reads to the workspace repository and commit, and a
+matching terminal rollup queues one durable continuation. Unknown results stay
+pending, and CI failure is not reported as success. Live acceptance remains required.
+
+Persisted native pause is cleared only by explicit `resume`, `/resume`, or `再開`.
+Ordinary follow-ups stay queued while paused; stop activities are control inputs
+and are never executed as task prompts. Current pause holds subsequent execution;
+interruption of an already-running agent remains unimplemented pending approval.

@@ -7,7 +7,8 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Control, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -31,6 +32,8 @@ defmodule SymphonyElixir.Orchestrator do
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
+      :control_server,
+      :control_graphql,
       :tick_timer_ref,
       :tick_token,
       task_supervisor: SymphonyElixir.TaskSupervisor,
@@ -65,6 +68,8 @@ defmodule SymphonyElixir.Orchestrator do
           tick_timer_ref: nil,
           tick_token: nil,
           task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
+          control_server: Keyword.get(opts, :control_server, Control),
+          control_graphql: Keyword.get(opts, :control_graphql, fn query, vars -> Client.graphql(query, vars) end),
           codex_totals: @empty_codex_totals,
           codex_rate_limits: nil
         }
@@ -139,6 +144,7 @@ defmodule SymphonyElixir.Orchestrator do
         session_id = running_entry_session_id(running_entry)
 
         state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
+        finish_control_run(state, issue_id, reason)
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
@@ -205,21 +211,33 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  defp finish_control_run(state, issue_id, reason) do
+    if control_enabled?(state) do
+      outcome = if reason == :normal, do: :normal, else: :failed
+      Control.finish_run(state.control_server, issue_id, outcome)
+    end
+  end
+
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
     else
-      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}")
 
-      state
-      |> complete_issue(issue_id)
-      |> schedule_issue_retry(issue_id, 1, %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
-        delay_type: :continuation,
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
-      })
+      state = complete_issue(state, issue_id)
+
+      if control_enabled?(state) do
+        _ = Control.publish(state.control_server, issue_id, {:waiting_user, %{}})
+        release_issue_claim(state, issue_id)
+      else
+        schedule_issue_retry(state, issue_id, 1, %{
+          identifier: running_entry.identifier,
+          issue_url: running_entry.issue.url,
+          delay_type: :continuation,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
+      end
     end
   end
 
@@ -261,6 +279,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.active_states),
+         true <- control_sync(state, issues),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
@@ -305,6 +324,24 @@ defmodule SymphonyElixir.Orchestrator do
       false ->
         state
     end
+  end
+
+  defp control_sync(%State{} = state, issues) do
+    if Config.settings!().control.enabled and not native_session_enabled?() do
+      Enum.all?(issues, fn issue ->
+        match?({:ok, _}, Control.sync_issue(state.control_server, issue, state.control_graphql))
+      end)
+    else
+      true
+    end
+  rescue
+    _ -> false
+  end
+
+  defp native_session_enabled? do
+    Config.settings!().linear_agent_session.enabled == true
+  rescue
+    _ -> false
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -820,6 +857,7 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
+      native_binding_allowed?(issue.id, state) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
@@ -829,6 +867,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp native_binding_allowed?(issue_id, %State{} = state) do
+    if native_session_enabled?() and control_enabled?(state) do
+      case Control.snapshot(state.control_server, issue_id) do
+        %{native_session_id: session_id} when is_binary(session_id) and session_id != "" -> true
+        _ -> false
+      end
+    else
+      true
+    end
+  end
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -940,19 +989,33 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
-    case select_worker_host(state, preferred_worker_host) do
-      :no_worker_capacity ->
-        Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
-        state
+    if control_enabled?(state) and not Control.dispatchable?(state.control_server, issue.id) do
+      state
+    else
+      case select_worker_host(state, preferred_worker_host) do
+        :no_worker_capacity ->
+          Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
+          state
 
-      worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        worker_host ->
+          spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+      end
     end
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    if control_enabled?(state) and Control.reserve_run(state.control_server, issue.id) != :ok do
+      state
+    else
+      spawn_reserved_issue(state, issue, attempt, recipient, worker_host)
+    end
+  end
+
+  defp spawn_reserved_issue(state, issue, attempt, recipient, worker_host) do
+    runner_opts = [attempt: attempt, worker_host: worker_host] |> maybe_control_runner_opts(state)
+
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient, runner_opts)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -991,6 +1054,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
 
       {:error, reason} ->
+        if control_enabled?(state), do: Control.finish_run(state.control_server, issue.id, :failed)
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
@@ -1001,6 +1065,20 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: worker_host
         })
     end
+  end
+
+  defp maybe_control_runner_opts(opts, %State{} = state) do
+    if control_enabled?(state), do: Keyword.put(opts, :control_server, state.control_server), else: opts
+  end
+
+  defp control_enabled?(state) do
+    case state.control_server do
+      nil -> false
+      server when is_pid(server) -> Process.alive?(server) and Config.settings!().control.enabled
+      server -> GenServer.whereis(server) != nil and Config.settings!().control.enabled
+    end
+  rescue
+    _ -> false
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)

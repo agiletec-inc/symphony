@@ -144,7 +144,7 @@ defmodule SymphonyElixir.Linear.Client do
 
     request_fun =
       Keyword.get(opts, :request_fun, fn request_payload, headers ->
-        post_graphql_request(request_payload, headers, tracker_settings.endpoint)
+        post_graphql_request(request_payload, headers, tracker_settings.endpoint, opts)
       end)
 
     with {:ok, headers} <- graphql_headers(tracker_settings),
@@ -384,12 +384,17 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp post_graphql_request(payload, headers, endpoint) do
-    Req.post(endpoint,
-      headers: headers,
-      json: payload,
-      connect_options: [timeout: 30_000]
-    )
+  defp post_graphql_request(payload, headers, endpoint, opts) do
+    transport =
+      case Keyword.get(opts, :request_timeout_ms) do
+        timeout when is_integer(timeout) and timeout > 0 ->
+          [connect_options: [timeout: timeout], pool_timeout: timeout, receive_timeout: timeout, retry: false]
+
+        _ ->
+          [connect_options: [timeout: 30_000]]
+      end
+
+    Req.post(endpoint, [headers: headers, json: payload] ++ transport)
   end
 
   defp decode_linear_response(response, assignee_filter) do

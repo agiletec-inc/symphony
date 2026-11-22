@@ -9,6 +9,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @turn_interrupt_id 7
+  @model_list_id 4
+  @thread_read_id 5
+  @thread_fork_id 6
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -19,6 +23,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_sandbox: String.t(),
           turn_sandbox_policy: map(),
           thread_id: String.t(),
+          model: String.t() | nil,
           workspace: Path.t(),
           worker_host: String.t() | nil,
           dynamic_tool_binding: map()
@@ -44,18 +49,19 @@ defmodule SymphonyElixir.Codex.AppServer do
          {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding) do
       metadata = port_metadata(port, worker_host)
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           {:ok, thread_id} <-
-             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
+      with {:ok, session_policies} <- selected_session_policies(expanded_workspace, worker_host, opts),
+           {:ok, %{thread_id: thread_id, model: returned_model}} <-
+             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding, opts) do
         {:ok,
          %{
            port: port,
            metadata: metadata,
            approval_policy: session_policies.approval_policy,
-           auto_approve_requests: session_policies.approval_policy == "never",
+           auto_approve_requests: session_policies.approval_policy == "never" and Keyword.get(opts, :read_only) != true,
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
+           model: returned_model,
            workspace: expanded_workspace,
            worker_host: worker_host,
            dynamic_tool_binding: dynamic_tool_binding
@@ -77,6 +83,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
+          model: model,
           workspace: workspace,
           dynamic_tool_binding: dynamic_tool_binding
         },
@@ -85,66 +92,201 @@ defmodule SymphonyElixir.Codex.AppServer do
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    output_schema = Keyword.get(opts, :output_schema)
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments, dynamic_tool_binding, issue: issue)
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
-      {:ok, turn_id} ->
-        session_id = "#{thread_id}-#{turn_id}"
-        Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
+    try do
+      case start_turn(
+             port,
+             thread_id,
+             prompt,
+             issue,
+             workspace,
+             %{approval_policy: approval_policy, turn_sandbox_policy: turn_sandbox_policy},
+             model,
+             output_schema
+           ) do
+        {:ok, turn_id} ->
+          try do
+            case Keyword.get(opts, :on_turn_started) do
+              callback when is_function(callback, 1) ->
+                case callback.(%{thread_id: thread_id, turn_id: turn_id}) do
+                  {:error, reason} ->
+                    send_message(port, %{"method" => "turn/interrupt", "id" => @turn_interrupt_id, "params" => %{"threadId" => thread_id, "turnId" => turn_id}})
+                    throw({:turn_start_rejected, reason})
 
-        emit_message(
-          on_message,
-          :session_started,
-          %{
-            session_id: session_id,
-            thread_id: thread_id,
-            turn_id: turn_id
-          },
-          metadata
-        )
+                  _ ->
+                    :ok
+                end
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
-          {:ok, result} ->
-            Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
+              _ ->
+                :ok
+            end
 
-            {:ok,
-             %{
-               result: result,
-               session_id: session_id,
-               thread_id: thread_id,
-               turn_id: turn_id
-             }}
-
-          {:error, reason} ->
-            Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
+            session_id = "#{thread_id}-#{turn_id}"
+            Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
             emit_message(
               on_message,
-              :turn_ended_with_error,
+              :session_started,
               %{
                 session_id: session_id,
-                reason: reason
+                thread_id: thread_id,
+                turn_id: turn_id
               },
               metadata
             )
 
-            {:error, reason}
-        end
+            receiver =
+              if is_map(output_schema),
+                do: {:structured, on_message, thread_id, turn_id, :missing},
+                else: on_message
 
-      {:error, reason} ->
-        Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
-        emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
-        {:error, reason}
+            case await_turn_completion(port, receiver, tool_executor, auto_approve_requests) do
+              {:ok, result} ->
+                Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
+
+                {result, output} = normalize_turn_result(result)
+
+                {:ok,
+                 %{
+                   result: result,
+                   session_id: session_id,
+                   thread_id: thread_id,
+                   turn_id: turn_id
+                 }
+                 |> maybe_output(output)}
+
+              {:error, reason} ->
+                Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
+
+                emit_message(
+                  on_message,
+                  :turn_ended_with_error,
+                  %{
+                    session_id: session_id,
+                    reason: reason
+                  },
+                  metadata
+                )
+
+                {:error, reason}
+            end
+          after
+            notify_turn_finished(opts, %{thread_id: thread_id, turn_id: turn_id})
+          end
+
+        {:error, reason} ->
+          Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
+          emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
+          {:error, reason}
+      end
+    catch
+      :throw, {:turn_start_rejected, reason} -> {:error, reason}
     end
   end
+
+  defp notify_turn_finished(opts, identity) do
+    case Keyword.get(opts, :on_turn_finished) do
+      callback when is_function(callback, 1) -> callback.(identity)
+      _ -> :ok
+    end
+  end
+
+  defp normalize_turn_result({:structured, decoded}), do: {:turn_completed, decoded}
+  defp normalize_turn_result(legacy), do: {legacy, nil}
 
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
+  end
+
+  @doc "Reads verified metadata for an existing app-server thread."
+  @spec read_thread(Path.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def read_thread(workspace, thread_id, opts \\ []) when is_binary(thread_id) do
+    app_server_request(workspace, opts, @thread_read_id, "thread/read", %{
+      "threadId" => thread_id,
+      "includeTurns" => Keyword.get(opts, :include_turns, false)
+    })
+  end
+
+  @doc "Forks an existing app-server thread into the supplied isolated cwd."
+  @spec fork_thread(Path.t(), String.t(), Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def fork_thread(workspace, thread_id, destination, opts \\ [])
+      when is_binary(thread_id) and is_binary(destination) do
+    worker_host = Keyword.get(opts, :worker_host)
+    model = Keyword.get(opts, :model, "gpt-5.6-luna")
+
+    with {:ok, destination} <- validate_workspace_cwd(destination, worker_host),
+         {:ok, policies} <- session_policies(destination, worker_host) do
+      params = %{
+        "threadId" => thread_id,
+        "cwd" => destination,
+        "excludeTurns" => true,
+        "model" => model,
+        "approvalPolicy" => policies.approval_policy,
+        "sandbox" => policies.thread_sandbox
+      }
+
+      with {:ok, result} <- app_server_request(workspace, opts, @thread_fork_id, "thread/fork", params),
+           :ok <- validate_fork_result(result, params) do
+        {:ok, result}
+      end
+    end
+  end
+
+  defp validate_fork_result(result, params) when is_map(result) do
+    expected_sandbox = %{"workspace-write" => "workspaceWrite", "read-only" => "readOnly", "danger-full-access" => "dangerFullAccess"}[params["sandbox"]]
+
+    case result do
+      %{"thread" => %{"id" => id}, "cwd" => cwd, "model" => model, "approvalPolicy" => approval, "sandbox" => %{"type" => sandbox}}
+      when is_binary(id) and id != "" ->
+        if id != params["threadId"] and cwd == params["cwd"] and
+             model == params["model"] and approval == params["approvalPolicy"] and
+             sandbox == expected_sandbox do
+          :ok
+        else
+          {:error, :fork_configuration_mismatch}
+        end
+
+      _ ->
+        {:error, :incomplete_fork_response}
+    end
+  end
+
+  defp validate_fork_result(_, _), do: {:error, :incomplete_fork_response}
+
+  defp app_server_request(workspace, opts, request_id, method, params) do
+    worker_host = Keyword.get(opts, :worker_host)
+    binding = DynamicTool.bind()
+    launch_workspace = if method == "thread/read", do: Path.join(Config.local_workspace_root(), ".symphony-metadata"), else: workspace
+
+    with {:ok, expanded} <- validate_workspace_cwd(launch_workspace, worker_host),
+         :ok <- ensure_metadata_workspace(method, expanded),
+         {:ok, port} <- start_port(expanded, worker_host, binding) do
+      try do
+        with {:ok, _policies} <- request_setup(port),
+             true <- send_message(port, %{"method" => method, "id" => request_id, "params" => params}) do
+          await_response(port, request_id)
+        end
+      after
+        stop_port(port)
+      end
+    end
+  end
+
+  defp ensure_metadata_workspace("thread/read", workspace), do: File.mkdir_p(workspace)
+  defp ensure_metadata_workspace(_, _workspace), do: :ok
+
+  defp request_setup(port) do
+    case send_initialize(port) do
+      :ok -> session_policies(Config.local_workspace_root(), nil)
+      error -> error
+    end
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
@@ -296,6 +438,24 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp selected_session_policies(workspace, worker_host, opts) do
+    with {:ok, policies} <- session_policies(workspace, worker_host) do
+      if Keyword.get(opts, :read_only) == true do
+        {:ok, %{policies | approval_policy: "never", thread_sandbox: "read-only", turn_sandbox_policy: %{"type" => "readOnly", "networkAccess" => false}}}
+      else
+        {:ok, policies}
+      end
+    end
+  end
+
+  defp read_only_response_valid?(response, workspace) do
+    response["cwd"] == workspace and response["approvalPolicy"] == "never" and
+      case response["sandbox"] do
+        %{"type" => "readOnly"} = sandbox -> Map.get(sandbox, "networkAccess", false) == false
+        _ -> false
+      end
+  end
+
   defp session_policies(workspace, nil) do
     Config.codex_runtime_settings(workspace)
   end
@@ -304,59 +464,124 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies, dynamic_tool_binding) do
+  defp do_start_session(port, workspace, session_policies, dynamic_tool_binding, opts) do
     case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies, dynamic_tool_binding)
-      {:error, reason} -> {:error, reason}
+      :ok ->
+        with :ok <- validate_requested_model(port, Keyword.get(opts, :model)) do
+          start_thread(port, workspace, session_policies, dynamic_tool_binding, opts)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp validate_requested_model(_port, nil), do: :ok
+
+  defp validate_requested_model(port, model) when is_binary(model) do
+    send_message(port, %{"method" => "model/list", "id" => @model_list_id, "params" => %{}})
+    await_model_response(port, model)
+  end
+
+  defp await_model_response(port, model) do
+    case await_response(port, @model_list_id) do
+      {:ok, %{"data" => models}} when is_list(models) -> validate_model_list(models, model)
+      {:ok, %{"models" => models}} when is_list(models) -> validate_model_list(models, model)
+      other -> {:error, {:model_list_failed, other}}
+    end
+  end
+
+  defp validate_model_list(models, model) do
+    if Enum.any?(models, fn item -> is_map(item) and (item["id"] == model or item["model"] == model) end), do: :ok, else: {:error, {:model_unavailable, model}}
   end
 
   defp start_thread(
          port,
          workspace,
          %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
-         dynamic_tool_binding
+         dynamic_tool_binding,
+         opts
        ) do
-    send_message(port, %{
-      "method" => "thread/start",
-      "id" => @thread_start_id,
-      "params" => %{
-        "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
-        "cwd" => workspace,
-        "dynamicTools" => dynamic_tool_binding.tool_specs
-      }
-    })
+    thread_id = Keyword.get(opts, :thread_id)
+    method = if is_binary(thread_id), do: "thread/resume", else: "thread/start"
+    request_id = @thread_start_id
+    params = thread_params(method, thread_id, workspace, approval_policy, thread_sandbox, dynamic_tool_binding, opts)
 
-    case await_response(port, @thread_start_id) do
-      {:ok, %{"thread" => thread_payload}} ->
-        case thread_payload do
-          %{"id" => thread_id} -> {:ok, thread_id}
-          _ -> {:error, {:invalid_thread_payload, thread_payload}}
-        end
+    send_message(port, %{"method" => method, "id" => request_id, "params" => params})
+    await_thread_response(port, request_id, thread_id, opts, workspace)
+  end
 
-      other ->
-        other
+  defp await_thread_response(port, request_id, thread_id, opts, workspace) do
+    case await_response(port, request_id) do
+      {:ok, %{"thread" => payload} = response} -> validate_thread_response(payload, response, thread_id, opts, workspace)
+      other -> other
     end
   end
 
-  defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+  defp validate_thread_response(%{"id" => returned}, response, requested, opts, workspace) when is_binary(returned) and byte_size(returned) > 0 do
+    model = response["model"]
+
+    cond do
+      is_binary(requested) and returned != requested ->
+        {:error, {:thread_id_mismatch, requested, returned}}
+
+      is_binary(opts[:model]) and model != opts[:model] ->
+        {:error, {:model_mismatch, opts[:model], model}}
+
+      opts[:read_only] == true and
+          not read_only_response_valid?(response, workspace) ->
+        {:error, :read_only_configuration_mismatch}
+
+      true ->
+        {:ok, %{thread_id: returned, model: model}}
+    end
+  end
+
+  defp validate_thread_response(payload, _response, _requested, _opts, _workspace), do: {:error, {:invalid_thread_payload, payload}}
+
+  defp thread_params("thread/start", _thread_id, workspace, approval_policy, thread_sandbox, binding, opts) do
+    binding = if Keyword.get(opts, :read_only) == true, do: nil, else: binding
+    base_thread_params(workspace, approval_policy, thread_sandbox, binding, opts)
+  end
+
+  defp thread_params("thread/resume", thread_id, workspace, approval_policy, thread_sandbox, _binding, opts) do
+    base_thread_params(workspace, approval_policy, thread_sandbox, nil, opts)
+    |> Map.put("threadId", thread_id)
+    |> Map.put("excludeTurns", true)
+  end
+
+  defp base_thread_params(workspace, approval_policy, thread_sandbox, binding, opts) do
+    %{"approvalPolicy" => approval_policy, "sandbox" => thread_sandbox, "cwd" => workspace}
+    |> maybe_put("model", Keyword.get(opts, :model))
+    |> maybe_put("dynamicTools", binding && binding.tool_specs)
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp start_turn(port, thread_id, prompt, issue, workspace, policies, model, output_schema) do
+    approval_policy = policies.approval_policy
+    turn_sandbox_policy = policies.turn_sandbox_policy
+
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
-      "params" => %{
-        "threadId" => thread_id,
-        "input" => [
-          %{
-            "type" => "text",
-            "text" => prompt
-          }
-        ],
-        "cwd" => workspace,
-        "title" => "#{issue.identifier}: #{issue.title}",
-        "approvalPolicy" => approval_policy,
-        "sandboxPolicy" => turn_sandbox_policy
-      }
+      "params" =>
+        %{
+          "threadId" => thread_id,
+          "input" => [
+            %{
+              "type" => "text",
+              "text" => prompt
+            }
+          ],
+          "cwd" => workspace,
+          "title" => "#{issue.identifier}: #{issue.title}",
+          "approvalPolicy" => approval_policy,
+          "sandboxPolicy" => turn_sandbox_policy
+        }
+        |> maybe_put("model", model)
+        |> maybe_put("outputSchema", output_schema)
     })
 
     case await_response(port, @turn_start_id) do
@@ -364,6 +589,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       other -> other
     end
   end
+
+  defp maybe_output(map, nil), do: map
+  defp maybe_output(map, output), do: Map.put(map, :output, output)
 
   defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
     receive_loop(
@@ -378,6 +606,10 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do
     receive do
+      {:native_interrupt, thread_id, turn_id} ->
+        maybe_interrupt_turn(port, on_message, thread_id, turn_id)
+        receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests)
+
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
         handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests)
@@ -400,7 +632,96 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do
+  defp maybe_interrupt_turn(port, {:structured, _callback, thread_id, current_turn_id, _output}, thread_id, current_turn_id) do
+    send_message(port, %{"method" => "turn/interrupt", "id" => @turn_interrupt_id, "params" => %{"threadId" => thread_id, "turnId" => current_turn_id}})
+  end
+
+  defp maybe_interrupt_turn(_port, _context, _thread_id, _turn_id), do: :ok
+
+  defp handle_incoming(port, {:structured, _, _, _, _} = context, data, timeout, executor, auto) do
+    case Jason.decode(to_string(data)) do
+      {:ok, payload} -> structured_payload(port, context, payload, data, timeout, executor, auto)
+      _ -> handle_incoming_plain(port, context, data, timeout, executor, auto)
+    end
+  end
+
+  defp handle_incoming(port, on_message, data, timeout, executor, auto) do
+    handle_incoming_plain(port, on_message, data, timeout, executor, auto)
+  end
+
+  defp structured_payload(port, context, payload, data, timeout, executor, auto) do
+    {:structured, _callback, thread_id, turn_id, output} = context
+
+    case structured_event(payload, thread_id, turn_id) do
+      {:item, item} ->
+        with {:ok, next_context} <- capture_structured_output(context, item) do
+          handle_incoming_plain(port, next_context, data, timeout, executor, auto)
+        end
+
+      :completed ->
+        emit_turn_event(context, :turn_completed, payload, to_string(data), port, payload)
+        completed_structured_output(output)
+
+      :ignore ->
+        receive_loop(port, context, timeout, "", executor, auto)
+
+      :plain ->
+        handle_incoming_plain(port, context, data, timeout, executor, auto)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp structured_event(%{"method" => "item/completed", "params" => params}, thread_id, turn_id) do
+    matching_final_item(params, thread_id, turn_id)
+  end
+
+  defp structured_event(%{"method" => "turn/completed", "params" => params}, thread_id, turn_id) do
+    matching_completion(params, thread_id, turn_id)
+  end
+
+  defp structured_event(%{"method" => "turn/completed"}, _thread_id, _turn_id) do
+    {:error, :invalid_turn_completion}
+  end
+
+  defp structured_event(_payload, _thread_id, _turn_id), do: :plain
+
+  defp matching_final_item(%{"threadId" => thread_id, "turnId" => turn_id, "item" => item}, thread_id, turn_id) do
+    case item do
+      %{"type" => "agentMessage", "phase" => "final_answer"} -> {:item, item}
+      _ -> :plain
+    end
+  end
+
+  defp matching_final_item(_params, _thread_id, _turn_id), do: :plain
+
+  defp matching_completion(%{"threadId" => thread, "turn" => %{"id" => turn}}, expected_thread, expected_turn)
+       when thread != expected_thread or turn != expected_turn, do: :ignore
+
+  defp matching_completion(%{"threadId" => thread, "turn" => %{"id" => turn, "status" => "completed"}}, thread, turn) do
+    :completed
+  end
+
+  defp matching_completion(_params, _thread_id, _turn_id), do: {:error, :unsuccessful_turn}
+
+  defp capture_structured_output({:structured, _callback, _thread, _turn, {:output, _}}, _item) do
+    {:error, :ambiguous_output}
+  end
+
+  defp capture_structured_output({:structured, callback, thread, turn, :missing}, %{"text" => text})
+       when is_binary(text) and byte_size(text) <= 65_536 do
+    case Jason.decode(text) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, {:structured, callback, thread, turn, {:output, decoded}}}
+      _ -> {:error, :invalid_output}
+    end
+  end
+
+  defp capture_structured_output(_context, _item), do: {:error, :invalid_output}
+  defp completed_structured_output({:output, decoded}), do: {:ok, {:structured, decoded}}
+  defp completed_structured_output(:missing), do: {:error, :missing_output}
+
+  defp handle_incoming_plain(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
@@ -979,6 +1300,10 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp emit_message({:structured, callback, _, _, _}, event, details, metadata) do
+    emit_message(callback, event, details, metadata)
+  end
+
   defp emit_message(on_message, event, details, metadata) when is_function(on_message, 1) do
     message = metadata |> Map.merge(details) |> Map.put(:event, event) |> Map.put(:timestamp, DateTime.utc_now())
     on_message.(message)
@@ -1068,4 +1393,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp needs_input_field?(_payload), do: false
+  @doc false
+  @spec requested_model(keyword()) :: String.t() | nil
+  def requested_model(opts), do: Keyword.get(opts, :model)
 end

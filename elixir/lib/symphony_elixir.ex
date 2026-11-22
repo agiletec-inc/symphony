@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Application do
     children = [
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
       SymphonyElixir.WorkflowStore,
+      {SymphonyElixir.Control, control_opts()},
       SymphonyElixir.AgentRuntimeSupervisor,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
@@ -48,6 +49,18 @@ defmodule SymphonyElixir.Application do
       strategy: :one_for_one,
       name: SymphonyElixir.Supervisor
     )
+  end
+
+  defp control_opts do
+    control = SymphonyElixir.Config.settings!().control
+
+    [
+      enabled: control.enabled,
+      state_root: control.state_root || Path.join(System.tmp_dir!(), "symphony-control-state"),
+      allowed_actor_ids: control.allowed_actor_ids,
+      controller_actor_id: control.controller_actor_id,
+      workspace_root: SymphonyElixir.Config.settings!().workspace.root
+    ]
   end
 
   @impl true

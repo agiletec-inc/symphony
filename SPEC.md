@@ -328,6 +328,12 @@ Loader behavior:
 
 - If the file cannot be read, return `missing_workflow_file` error.
 - The workflow file is expected to be repository-owned and version-controlled.
+- A trusted multi-repository instance controller MAY instead generate the selected workflow file as
+  an uncommitted runtime artifact. In that mode, instance-wide operational configuration (tracker
+  scope, runtime pin, total capacity, and lane inventory) MUST have one controller-owned manifest,
+  while each target repository MUST own its prompt policy. The controller MUST validate both
+  authorities, fail closed on drift or an unapproved runtime, and MUST NOT treat the generated file
+  as a source of truth.
 
 ### 5.2 File Format
 
@@ -338,6 +344,8 @@ Design note:
 - `WORKFLOW.md` SHOULD be self-contained enough to describe and run different workflows (prompt,
   runtime settings, hooks, and tracker selection/config) without requiring out-of-band
   service-specific configuration.
+- A controller-generated workflow is self-contained at the runtime boundary even when its inputs
+  are split between an instance manifest and a repository-owned prompt policy.
 
 Parsing rules:
 

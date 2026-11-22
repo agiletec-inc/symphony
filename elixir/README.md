@@ -397,3 +397,39 @@ you.
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
+
+
+## Native Linear session extension
+
+The native endpoint is `POST /api/v1/linear/agent-sessions`. It is disabled by
+`linear_agent_session.enabled: false` by default. Its settings are loaded from
+WORKFLOW front matter: `webhook_secret`, `organization_id`,
+`application_user_id`, `oauth_client_id`, and `project_id`. Scope identifiers must
+match the installed Linear application and its intended project. Secrets must
+come from the approved runtime credential owner and must not be committed.
+Deployment and credential-lifetime setup remain part of instance acceptance.
+
+Accepted notifications are validated against the exact signed body and the
+actual Linear session scope, then recorded by the Control process. Control state
+must live outside the isolated workspace root and have one runtime owner.
+Native mode requires `control.enabled: true`. It must preserve the saved Codex
+thread for follow-up work and perform no model turns while waiting for input.
+See [the acceptance contract](docs/linear-control.md) before enabling an instance.
+The optional extension is still under integration; passing local tests is not a
+claim of completed live acceptance.
+
+Native Linear sessions use structured implementation outcomes to select CI/user
+waiting or a fresh read-only Luna review. Review repair is bounded to three rounds
+(or a lower `agent.max_turns`); reviewer approval completes the run without merging
+or deploying. Worker exit preserves the selected state, while newer input and
+persisted pause take precedence. This path still requires live acceptance.
+
+Native CI waits are monitored by Control every 30 seconds without a model. The
+GitHub CLI adapter binds reads to the workspace repository and commit, and a
+matching terminal rollup queues one durable continuation. Unknown results stay
+pending, and CI failure is not reported as success. Live acceptance remains required.
+
+Persisted native pause is cleared only by explicit `resume`, `/resume`, or `再開`.
+Ordinary follow-ups stay queued while paused; stop activities are control inputs
+and are never executed as task prompts. Current pause holds subsequent execution;
+interruption of an already-running agent remains unimplemented pending approval.

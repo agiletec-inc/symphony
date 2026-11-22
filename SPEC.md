@@ -2310,3 +2310,36 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+
+## Optional native Linear control extension
+
+The Elixir native Linear extension is governed by
+[its acceptance contract](elixir/docs/linear-control.md). This extension keeps
+Agent Session input and operational progress associated with one issue and one
+isolated execution workspace. Signed webhook validation, authoritative scope
+checks, durable input deduplication, and model-free idle operation are required.
+Normal work uses the configured, authenticated Luna model without silent fallback.
+A selected Terminal continuation must retain its chosen thread context and source
+snapshot without executing inside or modifying the source repository.
+
+The default polling implementation remains available when the extension is
+disabled. Enabling the extension requires a supervised runtime, an approved
+Linear app and credential owner, and end-to-end instance acceptance; these are not
+proven by the presence of configuration fields or local protocol tests alone.
+
+Native Linear sessions use structured implementation outcomes to select CI/user
+waiting or a fresh read-only Luna review. Review repair is bounded to three rounds
+(or a lower `agent.max_turns`); reviewer approval completes the run without merging
+or deploying. Worker exit preserves the selected state, while newer input and
+persisted pause take precedence. This path still requires live acceptance.
+
+Native CI waits are monitored by Control every 30 seconds without a model. The
+GitHub CLI adapter binds reads to the workspace repository and commit, and a
+matching terminal rollup queues one durable continuation. Unknown results stay
+pending, and CI failure is not reported as success. Live acceptance remains required.
+
+Persisted native pause is cleared only by explicit `resume`, `/resume`, or `再開`.
+Ordinary follow-ups stay queued while paused; stop activities are control inputs
+and are never executed as task prompts. Current pause holds subsequent execution;
+interruption of an already-running agent remains unimplemented pending approval.

@@ -2,7 +2,7 @@
 name: land
 description:
   Land a PR by monitoring conflicts, resolving them, waiting for checks, and
-  squash-merging when green; use when asked to land, merge, or shepherd a PR to
+  merging when green; use when asked to land, merge, or shepherd a PR to
   completion.
 ---
 
@@ -12,9 +12,8 @@ description:
 
 - Ensure the PR is conflict-free with main.
 - Keep CI green and fix failures when they occur.
-- Squash-merge the PR once checks pass.
-- Do not yield to the user until the PR is merged; keep the watcher loop running
-  unless blocked.
+- Merge the PR using a method permitted by the base branch.
+- Confirm the merged commit on the base branch or record the outstanding GitHub check or review.
 - No need to delete remote branches after merge; the repo auto-deletes head
   branches.
 
@@ -37,8 +36,7 @@ description:
 7. Watch checks until complete.
 8. If checks fail, pull logs, fix the issue, commit with the `commit` skill,
    push with the `push` skill, and re-run checks.
-9. When all checks are green and review feedback is addressed, squash-merge and
-   delete the branch using the PR title/body for the merge subject/body.
+9. When all checks are green and review feedback is addressed, merge the reviewed head through the base branch rules.
 10. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
     respond inline with a justification and ask the user before changing code.
@@ -55,63 +53,32 @@ description:
 14. **Reply before change:** Always respond with intended action before pushing
     code changes (inline for review comments, issue thread for Codex reviews).
 
-## Commands
+## Checking and merging
 
-```
-# Ensure branch and PR context
-branch=$(git branch --show-current)
-pr_number=$(gh pr view --json number -q .number)
-pr_title=$(gh pr view --json title -q .title)
-pr_body=$(gh pr view --json body -q .body)
+Read the current head before reviewing changes. Inspect the checks and review
+feedback for this revision, including both issue comments and inline threads
+as described below.
 
-# Check mergeability and conflicts
-mergeable=$(gh pr view --json mergeable -q .mergeable)
-
-if [ "$mergeable" = "CONFLICTING" ]; then
-  # Run the `pull` skill to handle fetch + merge + conflict resolution.
-  # Then run the `push` skill to publish the updated branch.
-fi
-
-# Preferred: use the Async Watch Helper below. The manual loop is a fallback
-# when Python cannot run or the helper script is unavailable.
-# Wait for review feedback: Codex reviews arrive as issue comments that start
-# with "## Codex Review — <persona>". Treat them like reviewer feedback: reply
-# with a `[codex]` issue comment acknowledging the findings and whether you're
-# addressing or deferring them.
-while true; do
-  gh api repos/{owner}/{repo}/issues/"$pr_number"/comments \
-    --jq '.[] | select(.body | startswith("## Codex Review")) | .id' | rg -q '.' \
-    && break
-  sleep 10
-done
-
-# Watch checks
-if ! gh pr checks --watch; then
-  gh pr checks
-  # Identify failing run and inspect logs
-  # gh run list --branch "$branch"
-  # gh run view <run-id> --log
-  exit 1
-fi
-
-# Squash-merge (remote branches auto-delete on merge in this repo)
-gh pr merge --squash --subject "$pr_title" --body "$pr_body"
+```sh
+pr_number=$(gh pr view --json number --jq .number)
+reviewed_head=$(gh pr view "$pr_number" --json headRefOid --jq .headRefOid)
+gh pr view "$pr_number" --comments
+gh pr checks "$pr_number" --watch
 ```
 
-## Async Watch Helper
+If checks are missing, confirm that the expected workflow has actually run.
+If the head changes, review the new changes and checks. Read the latest review
+threads and issue comments once more before merging. When review and CI are
+complete, submit only the revision you reviewed:
 
-Preferred: use the asyncio watcher to monitor review comments, CI, and head
-updates in parallel:
-
+```sh
+gh pr merge "$pr_number" --merge --match-head-commit "$reviewed_head"
+gh pr view "$pr_number" --json state,mergeCommit,baseRefName
 ```
-python3 .codex/skills/land/land_watch.py
-```
 
-Exit codes:
-
-- 2: Review comments detected (address feedback)
-- 3: CI checks failed
-- 4: PR head updated (autofix commit detected)
+For a queue-protected base, use `gh pr merge` with the same head constraint
+and without a strategy flag. A queue entry still needs its merge-group checks
+to pass. Verify the merged state and the merge commit on the base branch.
 
 ## Failure Handling
 
@@ -131,8 +98,7 @@ Exit codes:
 - Codex review jobs retry on failure and are non-blocking; use the presence of
   `## Codex Review — <persona>` issue comments (not job status) as the signal
   that review feedback is available.
-- Do not enable auto-merge; this repo has no required checks so auto-merge can
-  skip tests.
+- Verify the product CI and review feedback before submitting the merge.
 - If the remote PR branch advanced due to your own prior force-push or merge,
   avoid redundant merges; re-run the formatter locally if needed and
   `git push --force-with-lease`.
@@ -181,11 +147,10 @@ Exit codes:
   - Reply with the fix details and commit sha (`[codex] ...`) in the same place
     you acknowledged the feedback (issue comment for Codex reviews, inline reply
     for review comments).
-  - The land watcher treats Codex review issue comments as unresolved until a
-    newer `[codex]` issue comment is posted acknowledging the findings.
+  - Check that each Codex review issue comment has a subsequent `[codex]` acknowledgement.
 - Only request a new Codex review when you need a rerun (e.g., after new
   commits). Do not request one without changes since the last review.
-  - Before requesting a new Codex review, re-run the land watcher and ensure
+  - Before requesting a new Codex review, read the issue comments and inline threads again and ensure
     there are zero outstanding review comments (all have `[codex]` inline
     replies).
   - After pushing new commits, the Codex review workflow will rerun on PR
